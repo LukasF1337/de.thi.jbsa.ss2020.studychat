@@ -1,0 +1,90 @@
+name: Build and Publish
+
+on:
+  push:
+    branches: [ master ]
+
+env:
+  REPO: 'eu.gcr.io/upheld-booking-331117/studychat'
+  PROJECT: 'upheld-booking-331117'
+  REGION: 'europe-west1'
+  ZONE: 'europe-west1-b'
+
+
+jobs:
+  setup-build-publish:
+    name: Setup, Build and Publish
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Setup JDK
+        uses: actions/setup-java@v2
+        with:
+          java-version: '8'
+          distribution: 'adopt'
+
+      - name: Build with Gradle
+        run: ./gradlew build
+
+      - name: Google Cloud Platform (GCP) CLI - gcloud
+        uses: google-github-actions/setup-gcloud@master
+        with:
+          version: '318.0.0'
+          service_account_email: ${{ secrets.GOOGLE_SERVICEACCOUNT_EMAIL }}
+          service_account_key: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS }}
+          export_default_credentials: true
+
+      - name: Configure Docker
+        run: |
+          # Export image tag to environment
+          IMAGETAG=${GITHUB_REF##*/}.${{github.run_number}}
+          echo "TAG=$IMAGETAG" >> $GITHUB_ENV
+
+          # Use gcloud as image repository
+          gcloud auth configure-docker
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v1
+
+      - name: Build and Upload Frontend Image
+        run: |
+          cd f-chat
+          docker build -t ${REPO}/chat:${TAG} -t ${REPO}/chat:LATEST .
+          docker push ${REPO}/chat --all-tags
+          # Delete old images to not needlessly take up space
+          gcloud container images list-tags ${REPO}/chat --filter="-tags=LATEST" --format="get(digest)" --limit=10 > tags
+          while read p; do gcloud container images delete "${REPO}/chat@$p" --quiet --force-delete-tags; done < tags
+
+      - name: Build and Upload Domain Image
+        run: |
+          cd b-domain-handler
+          docker build -t ${REPO}/domain:${TAG} -t ${REPO}/domain:LATEST .
+          docker push ${REPO}/domain --all-tags
+          gcloud container images list-tags ${REPO}/domain --filter="-tags=LATEST" --format="get(digest)" --limit=10 > tags
+          while read p; do gcloud container images delete "${REPO}/domain@$p" --quiet --force-delete-tags; done < tags
+
+      - name: Build and Upload Write-Api Image
+        run: |
+          cd b-write-api
+          docker build -t ${REPO}/write-api:${TAG} -t ${REPO}/write-api:LATEST .
+          docker push ${REPO}/write-api --all-tags
+          gcloud container images list-tags ${REPO}/write-api --filter="-tags=LATEST" --format="get(digest)" --limit=10 > tags
+          while read p; do gcloud container images delete "${REPO}/write-api@$p" --quiet --force-delete-tags; done < tags
+
+      - name: Build and Upload Read-Api Image
+        run: |
+          cd b-read-api
+          docker build -t ${REPO}/read-api:${TAG} -t ${REPO}/read-api:LATEST .
+          docker push ${REPO}/read-api --all-tags
+          gcloud container images list-tags ${REPO}/read-api --filter="-tags=LATEST" --format="get(digest)" --limit=10 > tags
+          while read p; do gcloud container images delete "${REPO}/read-api@$p" --quiet --force-delete-tags; done < tags
+
+      - name: Deploy service
+        run: |
+          gcloud config set project ${PROJECT}
+          cd infrastructure
+          terraform init
+          terraform apply -replace="google_compute_instance.studychat" -auto-approve -var="project=${PROJECT}" -var="zone=${ZONE}" -var="region=${REGION}"

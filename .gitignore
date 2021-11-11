@@ -40,3 +40,7 @@ webpack.config.js
 webpack.generated.js
 generated-flow-imports.js
 generated-flow-imports-fallback.js
+
+infrastructure/.terraform
+infrastructure/.*
+infrastructure/terraform.*
